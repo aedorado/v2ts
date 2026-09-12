@@ -36,21 +36,32 @@ console.log('🧪 Running unit tests for v2ts modules...\n');
   console.log('✅ Pass: parseCliArgs correctly handles CLI flags including --days');
 }
 
-// Test 4: formatTranscriptText
+// Test 4: formatTranscriptText with word-level speaker API payload
 {
-  const singleWordLines = [];
-  singleWordLines.push('SPEAKER 1');
-  for (let i = 0; i < 600; i++) {
-    singleWordLines.push(`word${i}`);
-  }
-  const raw = singleWordLines.join('\n');
-  const formatted = formatTranscriptText(raw);
-  assert.ok(formatted.startsWith('SPEAKER 1\nword0 word1'), 'Words joined into sentences');
-  assert.strictEqual(formatted.split('\n').length, 2, 'Should condense hundreds of lines into speaker block');
-  console.log('✅ Pass: formatTranscriptText reformats line-by-line single word output');
+  const mockApiData = {
+    words: [
+      { text: 'Hare', speaker_id: 'speaker_0' },
+      { text: 'Krishna', speaker_id: 'speaker_0' },
+      { text: 'Thank', speaker_id: 'speaker_1' },
+      { text: 'you', speaker_id: 'speaker_1' }
+    ]
+  };
+
+  const formatted = formatTranscriptText('', mockApiData);
+  assert.ok(formatted.includes('SPEAKER 0:\nHare Krishna'), 'Contains SPEAKER 0 block');
+  assert.ok(formatted.includes('SPEAKER 1:\nThank you'), 'Contains SPEAKER 1 block');
+  console.log('✅ Pass: formatTranscriptText formats word-level speaker IDs into distinct speaker blocks');
 }
 
-// Test 5: resolveTargetUrls for single video
+// Test 5: formatTranscriptText with embedded SPEAKER text
+{
+  const rawText = 'SPEAKER 0\nHare Krishna\nSPEAKER 1\nThank you';
+  const formatted = formatTranscriptText(rawText);
+  assert.ok(formatted.includes('SPEAKER 0:\nHare Krishna'), 'Reformats embedded speaker tags');
+  console.log('✅ Pass: formatTranscriptText reformats embedded speaker tags into clean paragraphs');
+}
+
+// Test 6: resolveTargetUrls for single video
 {
   const urls = resolveTargetUrls('https://www.youtube.com/watch?v=VIDEO_ID');
   assert.strictEqual(urls.length, 1);
