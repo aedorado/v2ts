@@ -95,7 +95,7 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
  * @param {string} target 
  * @param {Object} options
  * @param {number} [options.days=1] Lookback timeframe in days for channel uploads
- * @param {number} [options.maxCheck=15] Max recent channel videos to inspect
+ * @param {number} [options.maxCheck=10] Max recent channel videos to inspect
  * @returns {string[]} Array of video URLs
  */
 export function resolveTargetUrls(target, options = {}) {
@@ -118,7 +118,7 @@ export function resolveTargetUrls(target, options = {}) {
 
   if (isChannelOrPlaylist) {
     const days = options.days || 1;
-    const maxCheck = options.maxCheck || 15;
+    const maxCheck = options.maxCheck || 10;
     const cutoffDateStr = getCutoffDateString(days);
     console.log(`📺 Target is a Channel/Playlist URL: ${target}`);
     console.log(`🔍 Checking channel videos uploaded on or after ${cutoffDateStr} (last ${days} day(s))...`);
@@ -127,44 +127,44 @@ export function resolveTargetUrls(target, options = {}) {
       ? target 
       : `${target.replace(/\/$/, '')}/videos`;
     
-    // Fetch top recent video URLs from channel tab
+    // Single-call query returning upload_date, webpage_url, title for top recent videos
     const queryArgs = [
-      '--flat-playlist',
       '--playlist-end', String(maxCheck),
-      '--print', '%(webpage_url)s',
+      '--print', '%(upload_date>%Y_%m_%d)s\t%(webpage_url)s\t%(title)s',
       channelUrl
     ];
 
     const cmd = executeYtDlpWithFallback(queryArgs, { inheritStdio: false });
 
     if (cmd && cmd.stdout) {
-      const rawUrls = cmd.stdout
-        .trim()
-        .split('\n')
-        .map(u => u.trim())
-        .filter(u => u.startsWith('http'));
-
-      const uniqueUrls = Array.from(new Set(rawUrls));
+      const lines = cmd.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
       const matchingUrls = [];
 
-      for (const url of uniqueUrls) {
-        const meta = fetchVideoMetadata(url);
-        const videoDateStr = meta.uploadDate; // format: 'YYYY_MM_DD'
+      for (const line of lines) {
+        const parts = line.split('\t');
+        if (parts.length < 2) continue;
 
-        if (videoDateStr && videoDateStr >= cutoffDateStr) {
-          console.log(`  └─ Found recent video: ${meta.rawTitle} (${videoDateStr})`);
-          matchingUrls.push(url);
-        } else if (videoDateStr && videoDateStr < cutoffDateStr) {
-          console.log(`  └─ Reached older video: ${meta.rawTitle} (${videoDateStr}). Stopping channel scan.`);
-          break;
-        } else {
-          console.log(`  └─ Could not parse upload date for ${url}, including as recent video.`);
-          matchingUrls.push(url);
+        const videoDateStr = parts[0];
+        const videoUrl = parts[1];
+        const title = parts[2] || videoUrl;
+
+        if (/^\d{4}_\d{2}_\d{2}$/.test(videoDateStr)) {
+          if (videoDateStr >= cutoffDateStr) {
+            console.log(`  └─ Found recent video: ${title} (${videoDateStr})`);
+            matchingUrls.push(videoUrl);
+          } else {
+            console.log(`  └─ Reached older video: ${title} (${videoDateStr}). Stopping channel scan.`);
+            break;
+          }
+        } else if (videoUrl.startsWith('http')) {
+          console.log(`  └─ Including video: ${title}`);
+          matchingUrls.push(videoUrl);
         }
       }
 
-      console.log(`Found ${matchingUrls.length} video(s) uploaded in the last ${days} day(s).\n`);
-      return matchingUrls;
+      const uniqueUrls = Array.from(new Set(matchingUrls));
+      console.log(`Found ${uniqueUrls.length} video(s) uploaded in the last ${days} day(s).\n`);
+      return uniqueUrls;
     }
 
     console.log(`⚠️ No videos found for channel in the last ${days} day(s).\n`);
