@@ -1,15 +1,26 @@
 {
   "name": "v2ts",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "description": "Automated CLI tool to download YouTube audio via yt-dlp and generate high-accuracy transcripts using Playwright and ElevenLabs Speech-to-Text.",
+  "main": "bin/yta-transcribe.mjs",
+  "bin": {
+    "yta-transcribe": "./bin/yta-transcribe.mjs"
   },
-  "keywords": [],
+  "scripts": {
+    "start": "node bin/yta-transcribe.mjs",
+    "test": "node test/index.test.js"
+  },
+  "keywords": [
+    "youtube",
+    "transcript",
+    "speech-to-text",
+    "elevenlabs",
+    "playwright",
+    "yt-dlp"
+  ],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "playwright": "^1.62.1",
     "playwright-extra": "^4.3.6",

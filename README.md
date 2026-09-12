@@ -1,6 +1,30 @@
 # YouTube Video to Audio & Transcript Automation (`v2ts`)
 
-Automated CLI tool to download YouTube audio via `yt-dlp` and generate high-accuracy transcripts using headless browser automation on ElevenLabs Speech-to-Text (Hindi & English).
+Automated CLI tool to download YouTube audio via `yt-dlp` and generate high-accuracy transcripts using headless browser automation on ElevenLabs Speech-to-Text (Hindi & English). Supports single videos, batch files, and YouTube channel upload monitoring.
+
+---
+
+## 📁 Repository Architecture
+
+```text
+v2ts/
+├── .github/
+│   └── workflows/
+│       └── transcribe.yml        # GitHub Actions workflow for automated daily transcription
+├── bin/
+│   └── yta-transcribe.mjs        # Executable CLI entrypoint
+├── src/
+│   ├── formatter.js              # Plain text & JSON output generation & line reformatting
+│   ├── transcriber.js            # Playwright automation for ElevenLabs STT
+│   ├── utils.js                  # Filename sanitization, path handling & argument parsing
+│   └── youtube.js                # yt-dlp metadata extraction & channel video resolver
+├── test/
+│   └── index.test.js             # Automated unit tests for core modules
+├── scripts/                      # Inspection and debugging utility scripts
+├── yta-transcribe.mjs            # Backwards-compatible CLI wrapper
+├── package.json
+└── README.md
+```
 
 ---
 
@@ -20,10 +44,8 @@ transcripts/
 
 ## 💻 Setup on a New System
 
-Follow these step-by-step instructions to set up and run this project on any fresh macOS / Linux machine:
-
 ### 1. Prerequisites (System Tools)
-Make sure **Homebrew**, **Node.js (v18+)**, **yt-dlp**, and **ffmpeg** are installed:
+Make sure **Node.js (v18+)**, **yt-dlp**, and **ffmpeg** are installed:
 
 ```bash
 # macOS (using Homebrew)
@@ -36,36 +58,38 @@ sudo chmod a+rx /usr/local/bin/yt-dlp
 ```
 
 ### 2. Clone & Install Project Dependencies
-Navigate to the project folder and install the Node dependencies and Playwright Chromium browser:
-
 ```bash
+git clone https://github.com/aedorado/v2ts.git
 cd v2ts
 
 # Install npm packages
 npm install
 
-# Install Playwright browser binaries
-npx playwright install chromium
+# Install Playwright browser binaries with OS dependencies
+npx playwright install chromium --with-deps
 ```
 
-### 3. Make the CLI Executable
+### 3. Run Tests
 ```bash
-chmod +x yta-transcribe.mjs
+npm test
 ```
 
 ---
 
-## 🚀 Quick Start Commands
+## 🚀 Usage & Quick Start Commands
 
-### 1. Batch Transcription from File (Recommended)
-Add your YouTube links to `input.txt` (one URL per line), then run:
+### 1. Channel Uploads (e.g. `@BDDSwamiMedia` - Last 1 Day)
+Automatically fetch and transcribe all videos uploaded to a channel in the last N days (default: 1 day):
 
 ```zsh
-# Hindi / Hinglish mode
-./yta-transcribe.mjs -l hi input.txt
+# Process videos uploaded in the last 1 day (Default)
+./yta-transcribe.mjs "https://www.youtube.com/@BDDSwamiMedia"
 
-# English mode (Default)
-./yta-transcribe.mjs input.txt
+# Process videos uploaded in the last 3 days
+./yta-transcribe.mjs -d 3 "https://www.youtube.com/@BDDSwamiMedia"
+
+# Hindi language mode for channel videos
+./yta-transcribe.mjs -l hi -d 1 "https://www.youtube.com/@BDDSwamiMedia"
 ```
 
 ### 2. Single Video Transcription
@@ -76,32 +100,35 @@ Add your YouTube links to `input.txt` (one URL per line), then run:
 
 # Hindi
 ./yta-transcribe.mjs -l hi "https://www.youtube.com/watch?v=VIDEO_ID"
-# or
-./yta-transcribe.mjs --lang hindi "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # Custom Output Directory
-./yta-transcribe.mjs -l hi -o ./custom_folder input.txt
+./yta-transcribe.mjs -l hi -o ./custom_folder "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+### 3. Batch Transcription from File (`input.txt`)
+Add YouTube links to `input.txt` (one URL per line), then run:
+
+```zsh
+./yta-transcribe.mjs input.txt
 ```
 
 ---
 
-## 🛠️ Global Terminal Alias (Use from Anywhere)
+## ⚡ Running Daily in GitHub Actions
 
-To run this command from any folder in your terminal:
+This repository includes a pre-configured GitHub Actions workflow (`.github/workflows/transcribe.yml`) that runs **automatically every day at 00:00 UTC** (or manually on demand) to transcribe videos from `@BDDSwamiMedia` (or any channel/video) and commit the generated transcripts back to the Git repository.
 
-1. Add this alias to your shell configuration (`~/.zshrc` or `~/.bashrc`):
-   ```zsh
-   echo 'alias yta-transcribe="node /Users/anurag/pworkspace/v2ts/yta-transcribe.mjs"' >> ~/.zshrc
-   ```
-2. Reload your terminal configuration:
-   ```zsh
-   source ~/.zshrc
-   ```
-3. Now you can run it anywhere:
-   ```zsh
-   yta-transcribe -l hi input.txt
-   yta-transcribe -l hi "https://www.youtube.com/watch?v=Zy6k0QXBzcM"
-   ```
+### Features in GitHub Actions:
+- **Daily Automation Schedule**: Runs automatically every 24 hours (`cron: '0 0 * * *'`).
+- **Auto-Commit Transcripts**: Automatically commits & pushes newly created transcript folders under `transcripts/` directly to the `main` branch.
+- **Headless Playwright & yt-dlp**: Headless Chromium browser automation with automatic CI fallback.
+- **Artifact Downloads**: Uploads transcripts and audio files as downloadable artifacts on GitHub.
+
+### How to Trigger Manually from GitHub UI:
+1. Go to your repository on GitHub (`https://github.com/aedorado/v2ts`).
+2. Click on the **Actions** tab.
+3. Select **Transcribe YouTube Video** from the workflow list.
+4. Click **Run workflow**, set target (`https://www.youtube.com/@BDDSwamiMedia`), set days (`1`), and click **Run workflow**.
 
 ---
 
@@ -109,31 +136,16 @@ To run this command from any folder in your terminal:
 
 | Flag | Description | Default |
 | :--- | :--- | :--- |
+| `-d`, `--days` | Number of days to look back for Channel uploads | `1` |
 | `-l`, `--lang` | Language target (`hindi` / `hi` or `english` / `en`) | `english` |
 | `-o`, `--out` | Output destination directory | `./transcripts` |
 | `-h`, `--help` | Display usage instructions and examples | — |
 
 ---
 
-## 📝 Batch File Format (`input.txt`)
-
-You can include full YouTube URLs, short URLs (`youtu.be`), blank lines, and comments starting with `#`:
-
-```text
-# Hindi Video Batch
-https://www.youtube.com/watch?v=z0aG1xr2RV8
-https://www.youtube.com/watch?v=Zy6k0QXBzcM
-
-# English Video Batch
-https://www.youtube.com/watch?v=znSiMPv7IqE
-https://youtu.be/EBkQeBYllGw
-```
-
----
-
 ## 💡 Key Features & Smart Behaviors
 
-- **Smart Audio Caching**: If `.mp3` is already downloaded, it reuses the local file without re-fetching from YouTube.
-- **Smart Completion Skip**: If a valid transcript has already been generated, it skips redundant downloads & API calls.
+- **Automatic Channel Filtering**: Expands YouTube Channel URLs (`@channel`) and filters uploads within specified timeframe (`--days N`).
+- **Smart Audio Caching**: Reuses local audio files if `.mp3` is already present.
+- **Smart Completion Skip**: Skips redundant downloads & API calls if valid transcript exists.
 - **Isolated Incognito Sessions**: Every transcription runs in a fresh, isolated headless browser instance to bypass session limits.
-- **Robust YouTube Extraction**: Uses `--cookies-from-browser chrome` and mobile/android extractor fallback to avoid HTTP 403 Forbidden errors.

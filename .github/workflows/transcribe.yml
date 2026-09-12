@@ -1,0 +1,97 @@
+name: Transcribe YouTube Video
+
+on:
+  schedule:
+    # Automatically run every day at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'YouTube Video URL, Channel URL, or input file'
+        required: true
+        default: 'https://www.youtube.com/@BDDSwamiMedia'
+      days:
+        description: 'Number of days to look back for channel uploads'
+        required: true
+        default: '1'
+      language:
+        description: 'Target transcription language (english or hindi)'
+        required: true
+        default: 'english'
+        type: choice
+        options:
+          - english
+          - hindi
+      commit_transcripts:
+        description: 'Commit generated transcripts back to git repository'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  transcribe:
+    name: Transcribe Video & Extract Audio
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install System Dependencies (ffmpeg & yt-dlp)
+        run: |
+          sudo apt update
+          sudo apt install -y ffmpeg python3-pip
+          sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+          ffmpeg -version
+
+      - name: Install Project Dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium & OS Dependencies
+        run: npx playwright install chromium --with-deps
+
+      - name: Run Tests
+        run: npm test
+
+      - name: Run Transcription Script
+        env:
+          CI: true
+        run: |
+          TARGET_INPUT="${{ inputs.target || 'https://www.youtube.com/@BDDSwamiMedia' }}"
+          DAYS_INPUT="${{ inputs.days || '1' }}"
+          LANG_INPUT="${{ inputs.language || 'english' }}"
+
+          node bin/yta-transcribe.mjs -l "$LANG_INPUT" -d "$DAYS_INPUT" "$TARGET_INPUT"
+
+      - name: Commit Transcripts to Repository
+        if: ${{ inputs.commit_transcripts == true || github.event_name == 'schedule' }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add transcripts/
+          if git diff --staged --quiet; then
+            echo "No new transcripts to commit."
+          else
+            git commit -m "chore: auto-add transcripts [skip ci]"
+            git push origin main
+          fi
+
+      - name: Upload Generated Transcripts as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcripts-and-audio
+          path: transcripts/
+          retention-days: 14
