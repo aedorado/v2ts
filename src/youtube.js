@@ -3,13 +3,27 @@ import fs from 'fs';
 import path from 'path';
 import { sanitizeFilename } from './utils.js';
 
-// Player client strategies to bypass YouTube bot / sign-in detection in datacenter IPs (like CI/GitHub Actions)
+// Reliable player client strategies for YouTube metadata and audio downloading
 const PLAYER_CLIENT_STRATEGIES = [
-  'youtube:player_client=ios,web_creator',
-  'youtube:player_client=android_vr,tv_embedded',
   'youtube:player_client=mweb,android',
-  'youtube:player_client=web'
+  'youtube:player_client=android,web',
+  'youtube:player_client=ios,web_creator',
+  'youtube:player_client=android_vr,tv_embedded'
 ];
+
+/**
+ * Calculates a cutoff date string 'YYYY_MM_DD' for N days ago.
+ * @param {number} days 
+ * @returns {string}
+ */
+export function getCutoffDateString(days = 1) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}_${month}_${day}`;
+}
 
 /**
  * Builds yt-dlp argument list for a given strategy and cookie configuration.
@@ -21,18 +35,14 @@ const PLAYER_CLIENT_STRATEGIES = [
 function buildYtDlpArgs(playerClientStrategy, allowBrowserCookies = true, extraArgs = []) {
   const baseArgs = [];
 
-  // Check if explicit cookies file exists
   const envCookies = process.env.YTDLP_COOKIES_FILE || 'cookies.txt';
   if (fs.existsSync(envCookies) && fs.statSync(envCookies).size > 10) {
     baseArgs.push('--cookies', envCookies);
   } else if (allowBrowserCookies && !process.env.CI) {
-    // Only attempt Chrome browser cookies locally
     baseArgs.push('--cookies-from-browser', 'chrome');
   }
 
-  // Set player client strategy & common stealth options
   baseArgs.push('--extractor-args', playerClientStrategy);
-  baseArgs.push('--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1');
 
   return [...baseArgs, ...extraArgs];
 }
@@ -48,7 +58,6 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
   const inheritStdio = options.inheritStdio || false;
   let lastResult = null;
 
-  // 1. First pass: try with browser cookies (if local) across strategies
   for (const strategy of PLAYER_CLIENT_STRATEGIES) {
     const args = buildYtDlpArgs(strategy, true, extraArgs);
     const result = spawnSync('yt-dlp', args, {
@@ -56,13 +65,12 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
       stdio: inheritStdio ? 'inherit' : 'pipe'
     });
 
-    if (result.status === 0) {
+    if (result && result.status === 0 && result.stdout && result.stdout.trim()) {
       return result;
     }
     lastResult = result;
   }
 
-  // 2. Second pass: try without browser cookies across strategies (CI fallback)
   for (const strategy of PLAYER_CLIENT_STRATEGIES) {
     const args = buildYtDlpArgs(strategy, false, extraArgs);
     const result = spawnSync('yt-dlp', args, {
@@ -70,7 +78,7 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
       stdio: inheritStdio ? 'inherit' : 'pipe'
     });
 
-    if (result.status === 0) {
+    if (result && result.status === 0 && result.stdout && result.stdout.trim()) {
       return result;
     }
     lastResult = result;
@@ -87,7 +95,7 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
  * @param {string} target 
  * @param {Object} options
  * @param {number} [options.days=1] Lookback timeframe in days for channel uploads
- * @param {number} [options.maxVideos=20] Max recent channel videos to check
+ * @param {number} [options.maxCheck=15] Max recent channel videos to inspect
  * @returns {string[]} Array of video URLs
  */
 export function resolveTargetUrls(target, options = {}) {
@@ -110,36 +118,53 @@ export function resolveTargetUrls(target, options = {}) {
 
   if (isChannelOrPlaylist) {
     const days = options.days || 1;
-    const maxVideos = options.maxVideos || 20;
+    const maxCheck = options.maxCheck || 15;
+    const cutoffDateStr = getCutoffDateString(days);
     console.log(`📺 Target is a Channel/Playlist URL: ${target}`);
-    console.log(`🔍 Querying recent videos uploaded in the last ${days} day(s)...`);
+    console.log(`🔍 Checking channel videos uploaded on or after ${cutoffDateStr} (last ${days} day(s))...`);
 
     const channelUrl = (target.includes('/playlist') || target.endsWith('/videos')) 
       ? target 
       : `${target.replace(/\/$/, '')}/videos`;
     
-    const dateFilter = `now-${days}days`;
-
+    // Fetch top recent video URLs from channel tab
     const queryArgs = [
       '--flat-playlist',
-      '--playlist-end', String(maxVideos),
-      '--dateafter', dateFilter,
+      '--playlist-end', String(maxCheck),
       '--print', '%(webpage_url)s',
       channelUrl
     ];
 
     const cmd = executeYtDlpWithFallback(queryArgs, { inheritStdio: false });
 
-    if (cmd.stdout) {
-      const urls = cmd.stdout
+    if (cmd && cmd.stdout) {
+      const rawUrls = cmd.stdout
         .trim()
         .split('\n')
         .map(u => u.trim())
         .filter(u => u.startsWith('http'));
 
-      const uniqueUrls = Array.from(new Set(urls));
-      console.log(`Found ${uniqueUrls.length} video(s) uploaded in the last ${days} day(s).\n`);
-      return uniqueUrls;
+      const uniqueUrls = Array.from(new Set(rawUrls));
+      const matchingUrls = [];
+
+      for (const url of uniqueUrls) {
+        const meta = fetchVideoMetadata(url);
+        const videoDateStr = meta.uploadDate; // format: 'YYYY_MM_DD'
+
+        if (videoDateStr && videoDateStr >= cutoffDateStr) {
+          console.log(`  └─ Found recent video: ${meta.rawTitle} (${videoDateStr})`);
+          matchingUrls.push(url);
+        } else if (videoDateStr && videoDateStr < cutoffDateStr) {
+          console.log(`  └─ Reached older video: ${meta.rawTitle} (${videoDateStr}). Stopping channel scan.`);
+          break;
+        } else {
+          console.log(`  └─ Could not parse upload date for ${url}, including as recent video.`);
+          matchingUrls.push(url);
+        }
+      }
+
+      console.log(`Found ${matchingUrls.length} video(s) uploaded in the last ${days} day(s).\n`);
+      return matchingUrls;
     }
 
     console.log(`⚠️ No videos found for channel in the last ${days} day(s).\n`);
