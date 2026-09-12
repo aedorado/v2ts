@@ -3,29 +3,80 @@ import fs from 'fs';
 import path from 'path';
 import { sanitizeFilename } from './utils.js';
 
+// Player client strategies to bypass YouTube bot / sign-in detection in datacenter IPs (like CI/GitHub Actions)
+const PLAYER_CLIENT_STRATEGIES = [
+  'youtube:player_client=ios,web_creator',
+  'youtube:player_client=android_vr,tv_embedded',
+  'youtube:player_client=mweb,android',
+  'youtube:player_client=web'
+];
+
 /**
- * Helper to build yt-dlp arguments for metadata or downloading.
- * Supports automatic cookie detection and fallback for CI / GitHub Actions.
- * @param {boolean} useCookies 
+ * Builds yt-dlp argument list for a given strategy and cookie configuration.
+ * @param {string} playerClientStrategy 
+ * @param {boolean} allowBrowserCookies 
  * @param {string[]} extraArgs 
  * @returns {string[]}
  */
-function buildYtDlpArgs(useCookies = true, extraArgs = []) {
+function buildYtDlpArgs(playerClientStrategy, allowBrowserCookies = true, extraArgs = []) {
   const baseArgs = [];
 
-  // Check if explicit cookies file path is provided via environment or file
+  // Check if explicit cookies file exists
   const envCookies = process.env.YTDLP_COOKIES_FILE || 'cookies.txt';
-  if (fs.existsSync(envCookies)) {
+  if (fs.existsSync(envCookies) && fs.statSync(envCookies).size > 10) {
     baseArgs.push('--cookies', envCookies);
-  } else if (useCookies && !process.env.CI) {
-    // Only attempt Chrome browser cookies if NOT running in CI (GitHub Actions)
+  } else if (allowBrowserCookies && !process.env.CI) {
+    // Only attempt Chrome browser cookies locally
     baseArgs.push('--cookies-from-browser', 'chrome');
   }
 
-  // Reliable player client args for YouTube
-  baseArgs.push('--extractor-args', 'youtube:player_client=mweb,android');
+  // Set player client strategy & common stealth options
+  baseArgs.push('--extractor-args', playerClientStrategy);
+  baseArgs.push('--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1');
 
   return [...baseArgs, ...extraArgs];
+}
+
+/**
+ * Executes a yt-dlp command trying multiple player client strategies until one succeeds.
+ * @param {string[]} extraArgs 
+ * @param {Object} options
+ * @param {boolean} [options.inheritStdio=false]
+ * @returns {{ status: number, stdout: string, stderr: string }}
+ */
+function executeYtDlpWithFallback(extraArgs, options = {}) {
+  const inheritStdio = options.inheritStdio || false;
+  let lastResult = null;
+
+  // 1. First pass: try with browser cookies (if local) across strategies
+  for (const strategy of PLAYER_CLIENT_STRATEGIES) {
+    const args = buildYtDlpArgs(strategy, true, extraArgs);
+    const result = spawnSync('yt-dlp', args, {
+      encoding: 'utf-8',
+      stdio: inheritStdio ? 'inherit' : 'pipe'
+    });
+
+    if (result.status === 0) {
+      return result;
+    }
+    lastResult = result;
+  }
+
+  // 2. Second pass: try without browser cookies across strategies (CI fallback)
+  for (const strategy of PLAYER_CLIENT_STRATEGIES) {
+    const args = buildYtDlpArgs(strategy, false, extraArgs);
+    const result = spawnSync('yt-dlp', args, {
+      encoding: 'utf-8',
+      stdio: inheritStdio ? 'inherit' : 'pipe'
+    });
+
+    if (result.status === 0) {
+      return result;
+    }
+    lastResult = result;
+  }
+
+  return lastResult;
 }
 
 /**
@@ -77,12 +128,7 @@ export function resolveTargetUrls(target, options = {}) {
       channelUrl
     ];
 
-    let cmd = spawnSync('yt-dlp', buildYtDlpArgs(true, queryArgs), { encoding: 'utf-8' });
-
-    // Fallback if browser cookies fail in CI
-    if (cmd.status !== 0 || !cmd.stdout) {
-      cmd = spawnSync('yt-dlp', buildYtDlpArgs(false, queryArgs), { encoding: 'utf-8' });
-    }
+    const cmd = executeYtDlpWithFallback(queryArgs, { inheritStdio: false });
 
     if (cmd.stdout) {
       const urls = cmd.stdout
@@ -105,7 +151,7 @@ export function resolveTargetUrls(target, options = {}) {
 }
 
 /**
- * Fetches video metadata (upload date & title) using yt-dlp with fallback.
+ * Fetches video metadata (upload date & title) using yt-dlp with fallback strategies.
  * @param {string} youtubeUrl 
  * @returns {{ uploadDate: string, rawTitle: string, cleanTitle: string, folderName: string }}
  */
@@ -113,21 +159,13 @@ export function fetchVideoMetadata(youtubeUrl) {
   let uploadDate = '';
   let rawTitle = 'youtube_audio';
 
-  let metaCmd = spawnSync('yt-dlp', buildYtDlpArgs(true, [
+  const metaCmd = executeYtDlpWithFallback([
     '--print', '%(upload_date>%Y_%m_%d)s',
     '--print', '%(title)s',
     youtubeUrl
-  ]), { encoding: 'utf-8' });
+  ], { inheritStdio: false });
 
-  if (metaCmd.status !== 0 || !metaCmd.stdout) {
-    metaCmd = spawnSync('yt-dlp', buildYtDlpArgs(false, [
-      '--print', '%(upload_date>%Y_%m_%d)s',
-      '--print', '%(title)s',
-      youtubeUrl
-    ]), { encoding: 'utf-8' });
-  }
-
-  if (metaCmd.stdout) {
+  if (metaCmd && metaCmd.stdout) {
     const lines = metaCmd.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length >= 2) {
       uploadDate = lines[0];
@@ -145,7 +183,7 @@ export function fetchVideoMetadata(youtubeUrl) {
 }
 
 /**
- * Downloads audio as MP3 using yt-dlp with automatic fallback.
+ * Downloads audio as MP3 using yt-dlp with client strategy fallback.
  * @param {string} youtubeUrl 
  * @param {string} audioPath 
  */
@@ -166,14 +204,9 @@ export function downloadAudio(youtubeUrl, audioPath) {
     youtubeUrl
   ];
 
-  let dlResult = spawnSync('yt-dlp', buildYtDlpArgs(true, downloadParams), { stdio: 'inherit' });
+  const dlResult = executeYtDlpWithFallback(downloadParams, { inheritStdio: true });
 
-  if (dlResult.status !== 0) {
-    console.log('⚠️ First download attempt failed. Retrying without browser cookies...');
-    dlResult = spawnSync('yt-dlp', buildYtDlpArgs(false, downloadParams), { stdio: 'inherit' });
-  }
-
-  if (dlResult.status !== 0) {
+  if (!dlResult || dlResult.status !== 0) {
     throw new Error(`Failed to download audio with yt-dlp for URL: ${youtubeUrl}`);
   }
 }
