@@ -88,26 +88,23 @@ jobs:
 
           node bin/yta-transcribe.mjs -l "$LANG_INPUT" -d "$DAYS_INPUT" "$TARGET_INPUT"
 
-      - name: Save Transcripts to Dedicated 'transcripts' Branch
+      - name: Save Transcripts to Clean 'transcripts' Branch
         if: ${{ inputs.commit_transcripts == true || github.event_name == 'schedule' }}
         run: |
           if [ -d "transcripts" ] && [ -n "$(ls -A transcripts/ 2>/dev/null)" ]; then
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-            # Save generated transcripts to mktemp directory
+            # 1. Save generated transcripts to temporary location
             TMP_DIR=$(mktemp -d)
             cp -r transcripts "$TMP_DIR/"
 
-            # Switch to 'transcripts' branch (or create orphan branch if first run)
-            if git checkout transcripts 2>/dev/null; then
-              git pull origin transcripts --ff-only 2>/dev/null || true
-            else
-              git checkout --orphan transcripts
-              git rm -rf . 2>/dev/null || true
-            fi
+            # 2. Checkout clean orphan 'transcripts' branch
+            git fetch origin transcripts
+            git checkout transcripts
+            git pull origin transcripts --ff-only || true
 
-            # Copy generated transcripts back into branch
+            # 3. Copy generated transcripts into branch
             mkdir -p transcripts
             cp -r "$TMP_DIR"/transcripts/* transcripts/ 2>/dev/null || true
 
@@ -117,10 +114,10 @@ jobs:
             else
               git commit -m "chore: auto-save transcripts [skip ci]"
               git push origin transcripts
-              echo "✅ Successfully saved transcripts to 'transcripts' branch!"
+              echo "✅ Successfully saved transcripts to clean 'transcripts' branch!"
             fi
 
-            # Return to main branch
+            # 4. Return to main branch
             git checkout main
           else
             echo "No transcripts directory found to save."
