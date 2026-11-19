@@ -51,8 +51,9 @@ jobs:
 
       - name: Install System Dependencies (ffmpeg & yt-dlp)
         run: |
-          sudo apt update
-          sudo apt install -y ffmpeg python3-pip
+          if ! command -v ffmpeg &> /dev/null; then
+            sudo apt update && sudo apt install -y ffmpeg
+          fi
           sudo wget https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -O /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
           yt-dlp --version
