@@ -13,7 +13,7 @@ on:
       days:
         description: 'Number of days to look back for channel uploads'
         required: true
-        default: '1'
+        default: '2'
       language:
         description: 'Target transcription language (english or hindi)'
         required: true
@@ -73,6 +73,8 @@ jobs:
             echo "✅ Loaded YouTube cookies from YTDLP_COOKIES GitHub secret."
           else
             echo "ℹ️ No YTDLP_COOKIES secret found, proceeding with player client strategy rotation."
+            echo "⚠️ Note: Cloud runner IPs (GitHub Actions) are often rate-limited or challenged by YouTube."
+            echo "   To avoid missing daily uploads, set the YTDLP_COOKIES secret in Repository Settings > Secrets."
           fi
 
       - name: Run Tests
@@ -83,7 +85,7 @@ jobs:
           CI: true
         run: |
           TARGET_INPUT="${{ inputs.target || 'https://www.youtube.com/@BDDSwamiMedia' }}"
-          DAYS_INPUT="${{ inputs.days || '1' }}"
+          DAYS_INPUT="${{ inputs.days || '2' }}"
           LANG_INPUT="${{ inputs.language || 'english' }}"
 
           node bin/yta-transcribe.mjs -l "$LANG_INPUT" -d "$DAYS_INPUT" "$TARGET_INPUT"

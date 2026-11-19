@@ -1,7 +1,7 @@
 import assert from 'assert';
 import { sanitizeFilename, parseCliArgs } from '../src/utils.js';
 import { formatTranscriptText } from '../src/formatter.js';
-import { resolveTargetUrls } from '../src/youtube.js';
+import { resolveTargetUrls, getChannelScanUrls } from '../src/youtube.js';
 
 console.log('🧪 Running unit tests for v2ts modules...\n');
 
@@ -67,6 +67,27 @@ console.log('🧪 Running unit tests for v2ts modules...\n');
   assert.strictEqual(urls.length, 1);
   assert.strictEqual(urls[0], 'https://www.youtube.com/watch?v=VIDEO_ID');
   console.log('✅ Pass: resolveTargetUrls resolves single video URL');
+}
+
+// Test 7: getChannelScanUrls expands bare channel URL to /streams and /videos
+{
+  const channelUrls = getChannelScanUrls('https://www.youtube.com/@BDDSwamiMedia');
+  assert.strictEqual(channelUrls.length, 2);
+  assert.strictEqual(channelUrls[0], 'https://www.youtube.com/@BDDSwamiMedia/streams');
+  assert.strictEqual(channelUrls[1], 'https://www.youtube.com/@BDDSwamiMedia/videos');
+  console.log('✅ Pass: getChannelScanUrls scans both /streams and /videos for bare channels');
+}
+
+// Test 8: getChannelScanUrls preserves explicit tabs (/streams, /videos, /playlist)
+{
+  const streamsUrl = getChannelScanUrls('https://www.youtube.com/@BDDSwamiMedia/streams');
+  assert.strictEqual(streamsUrl.length, 1);
+  assert.strictEqual(streamsUrl[0], 'https://www.youtube.com/@BDDSwamiMedia/streams');
+
+  const playlistUrl = getChannelScanUrls('https://www.youtube.com/playlist?list=PL12345');
+  assert.strictEqual(playlistUrl.length, 1);
+  assert.strictEqual(playlistUrl[0], 'https://www.youtube.com/playlist?list=PL12345');
+  console.log('✅ Pass: getChannelScanUrls preserves explicit tab and playlist URLs');
 }
 
 console.log('\n🎉 All unit tests passed successfully!');

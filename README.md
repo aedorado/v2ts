@@ -128,7 +128,14 @@ This repository includes a pre-configured GitHub Actions workflow (`.github/work
 1. Go to your repository on GitHub (`https://github.com/aedorado/v2ts`).
 2. Click on the **Actions** tab.
 3. Select **Transcribe YouTube Video** from the workflow list.
-4. Click **Run workflow**, set target (`https://www.youtube.com/@BDDSwamiMedia`), set days (`1`), and click **Run workflow**.
+4. Click **Run workflow**, set target (`https://www.youtube.com/@BDDSwamiMedia`), set days (`2`), and click **Run workflow**.
+
+### Configuring YouTube Cookies for CI (`YTDLP_COOKIES`):
+YouTube aggressively blocks or challenges datacenter IP addresses (such as GitHub Actions / Azure runners). To ensure reliable daily automated runs:
+1. Use a browser extension (such as [Get cookies.txt locally](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)) while logged into YouTube.
+2. Export your cookies as a text file.
+3. On GitHub, navigate to **Settings** > **Secrets and variables** > **Actions**.
+4. Click **New repository secret**, name it `YTDLP_COOKIES`, and paste the contents of your exported cookies file.
 
 ---
 

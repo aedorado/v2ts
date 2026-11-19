@@ -58,6 +58,10 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
   const inheritStdio = options.inheritStdio || false;
   let lastResult = null;
 
+  const envCookies = process.env.YTDLP_COOKIES_FILE || 'cookies.txt';
+  const hasCookiesFile = fs.existsSync(envCookies) && fs.statSync(envCookies).size > 10;
+  const allowBrowser = !process.env.CI;
+
   for (const strategy of PLAYER_CLIENT_STRATEGIES) {
     const args = buildYtDlpArgs(strategy, true, extraArgs);
     const result = spawnSync('yt-dlp', args, {
@@ -71,20 +75,49 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
     lastResult = result;
   }
 
-  for (const strategy of PLAYER_CLIENT_STRATEGIES) {
-    const args = buildYtDlpArgs(strategy, false, extraArgs);
-    const result = spawnSync('yt-dlp', args, {
-      encoding: 'utf-8',
-      stdio: inheritStdio ? 'inherit' : 'pipe'
-    });
+  // Only run second pass if browser cookies were an option in pass 1 and no cookie file exists
+  if (allowBrowser && !hasCookiesFile) {
+    for (const strategy of PLAYER_CLIENT_STRATEGIES) {
+      const args = buildYtDlpArgs(strategy, false, extraArgs);
+      const result = spawnSync('yt-dlp', args, {
+        encoding: 'utf-8',
+        stdio: inheritStdio ? 'inherit' : 'pipe'
+      });
 
-    if (result && result.status === 0 && result.stdout && result.stdout.trim()) {
-      return result;
+      if (result && result.status === 0 && result.stdout && result.stdout.trim()) {
+        return result;
+      }
+      lastResult = result;
     }
-    lastResult = result;
   }
 
   return lastResult;
+}
+
+/**
+ * Determines which channel tabs/URLs to scan.
+ * Spiritual and educational channels frequently stream daily lectures under /streams (Live),
+ * so unless a specific tab is specified, both /streams and /videos are scanned.
+ * 
+ * @param {string} target 
+ * @returns {string[]} Array of URLs to inspect
+ */
+export function getChannelScanUrls(target) {
+  const cleanTarget = target.trim().replace(/\/+$/, '');
+  const isExplicitTab = cleanTarget.includes('/playlist') || 
+    cleanTarget.endsWith('/videos') || 
+    cleanTarget.endsWith('/streams') || 
+    cleanTarget.endsWith('/live') || 
+    cleanTarget.endsWith('/shorts');
+
+  if (isExplicitTab) {
+    return [cleanTarget];
+  }
+
+  return [
+    `${cleanTarget}/streams`,
+    `${cleanTarget}/videos`
+  ];
 }
 
 /**
@@ -123,51 +156,82 @@ export function resolveTargetUrls(target, options = {}) {
     console.log(`📺 Target is a Channel/Playlist URL: ${target}`);
     console.log(`🔍 Checking channel videos uploaded on or after ${cutoffDateStr} (last ${days} day(s))...`);
 
-    const channelUrl = (target.includes('/playlist') || target.endsWith('/videos')) 
-      ? target 
-      : `${target.replace(/\/$/, '')}/videos`;
-    
-    // Single-call query returning upload_date, webpage_url, title for top recent videos
-    const queryArgs = [
-      '--playlist-end', String(maxCheck),
-      '--print', '%(upload_date>%Y_%m_%d)s\t%(webpage_url)s\t%(title)s',
-      channelUrl
-    ];
+    const channelsToScan = getChannelScanUrls(target);
+    const allMatchingUrls = [];
+    let anyQuerySucceeded = false;
+    let lastErrorSnippet = null;
 
-    const cmd = executeYtDlpWithFallback(queryArgs, { inheritStdio: false });
-
-    if (cmd && cmd.stdout) {
-      const lines = cmd.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
-      const matchingUrls = [];
-
-      for (const line of lines) {
-        const parts = line.split('\t');
-        if (parts.length < 2) continue;
-
-        const videoDateStr = parts[0];
-        const videoUrl = parts[1];
-        const title = parts[2] || videoUrl;
-
-        if (/^\d{4}_\d{2}_\d{2}$/.test(videoDateStr)) {
-          if (videoDateStr >= cutoffDateStr) {
-            console.log(`  └─ Found recent video: ${title} (${videoDateStr})`);
-            matchingUrls.push(videoUrl);
-          } else {
-            console.log(`  └─ Reached older video: ${title} (${videoDateStr}). Stopping channel scan.`);
-            break;
-          }
-        } else if (videoUrl.startsWith('http')) {
-          console.log(`  └─ Including video: ${title}`);
-          matchingUrls.push(videoUrl);
-        }
+    for (const channelUrl of channelsToScan) {
+      if (channelsToScan.length > 1) {
+        const tabLabel = channelUrl.endsWith('/streams') ? 'Live Streams (/streams)' : 'Uploaded Videos (/videos)';
+        console.log(`  🔎 Scanning ${tabLabel}...`);
       }
 
-      const uniqueUrls = Array.from(new Set(matchingUrls));
-      console.log(`Found ${uniqueUrls.length} video(s) uploaded in the last ${days} day(s).\n`);
+      // Single-call query returning upload_date, webpage_url, title for top recent videos
+      const queryArgs = [
+        '--playlist-end', String(maxCheck),
+        '--print', '%(upload_date>%Y_%m_%d)s\t%(webpage_url)s\t%(title)s',
+        channelUrl
+      ];
+
+      const cmd = executeYtDlpWithFallback(queryArgs, { inheritStdio: false });
+
+      if (cmd && cmd.stdout && cmd.stdout.trim()) {
+        anyQuerySucceeded = true;
+        const lines = cmd.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
+
+        for (const line of lines) {
+          const parts = line.split('\t');
+          if (parts.length < 2) continue;
+
+          const videoDateStr = parts[0];
+          const videoUrl = parts[1];
+          const title = parts[2] || videoUrl;
+
+          if (/^\d{4}_\d{2}_\d{2}$/.test(videoDateStr)) {
+            if (videoDateStr >= cutoffDateStr) {
+              console.log(`  └─ Found recent video: ${title} (${videoDateStr})`);
+              allMatchingUrls.push(videoUrl);
+            } else {
+              console.log(`  └─ Reached older video: ${title} (${videoDateStr}). Stopping this tab scan.`);
+              break;
+            }
+          } else if (videoUrl.startsWith('http')) {
+            console.log(`  └─ Including video: ${title}`);
+            allMatchingUrls.push(videoUrl);
+          }
+        }
+      } else {
+        if (cmd && cmd.status === 0) {
+          anyQuerySucceeded = true;
+        } else if (cmd && cmd.stderr) {
+          const errorLine = cmd.stderr.split('\n')
+            .find(l => l.includes('ERROR:') || l.includes('Sign in') || l.includes('HTTP Error')) || cmd.stderr.trim().split('\n')[0];
+          if (errorLine) {
+            lastErrorSnippet = errorLine.trim();
+          }
+        }
+      }
+    }
+
+    const uniqueUrls = Array.from(new Set(allMatchingUrls));
+
+    if (uniqueUrls.length > 0) {
+      console.log(`\n🎉 Found ${uniqueUrls.length} video(s) uploaded in the last ${days} day(s).\n`);
       return uniqueUrls;
     }
 
-    console.log(`⚠️ No videos found for channel in the last ${days} day(s).\n`);
+    if (anyQuerySucceeded) {
+      console.log(`\n⚠️ No videos found for channel in the last ${days} day(s).\n`);
+    } else {
+      console.log(`\n⚠️ yt-dlp was unable to retrieve video listings from the channel.`);
+      if (lastErrorSnippet) {
+        console.log(`   Details: ${lastErrorSnippet}`);
+      }
+      console.log(`💡 Tip: Cloud runner IPs (e.g. GitHub Actions) are often challenged or blocked by YouTube.`);
+      console.log(`   Export your YouTube cookies to cookies.txt or configure the YTDLP_COOKIES GitHub Secret.\n`);
+    }
+
     return [];
   }
 
