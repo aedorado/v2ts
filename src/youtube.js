@@ -5,9 +5,10 @@ import { sanitizeFilename } from './utils.js';
 
 // Reliable player client strategies for YouTube metadata and audio downloading
 const PLAYER_CLIENT_STRATEGIES = [
-  'youtube:player_client=mweb,android',
-  'youtube:player_client=android,web',
+  'default', // yt-dlp native auto-selection
+  'youtube:player_client=tv_embedded,web',
   'youtube:player_client=ios,web_creator',
+  'youtube:player_client=mweb,android',
   'youtube:player_client=android_vr,tv_embedded'
 ];
 
@@ -30,19 +31,22 @@ export function getCutoffDateString(days = 1) {
  * @param {string} playerClientStrategy 
  * @param {boolean} allowBrowserCookies 
  * @param {string[]} extraArgs 
+ * @param {boolean} useCookieFile 
  * @returns {string[]}
  */
-function buildYtDlpArgs(playerClientStrategy, allowBrowserCookies = true, extraArgs = []) {
+function buildYtDlpArgs(playerClientStrategy, allowBrowserCookies = true, extraArgs = [], useCookieFile = true) {
   const baseArgs = [];
 
   const envCookies = process.env.YTDLP_COOKIES_FILE || 'cookies.txt';
-  if (fs.existsSync(envCookies) && fs.statSync(envCookies).size > 10) {
+  if (useCookieFile && fs.existsSync(envCookies) && fs.statSync(envCookies).size > 10) {
     baseArgs.push('--cookies', envCookies);
   } else if (allowBrowserCookies && !process.env.CI) {
     baseArgs.push('--cookies-from-browser', 'chrome');
   }
 
-  baseArgs.push('--extractor-args', playerClientStrategy);
+  if (playerClientStrategy && playerClientStrategy !== 'default') {
+    baseArgs.push('--extractor-args', playerClientStrategy);
+  }
 
   return [...baseArgs, ...extraArgs];
 }
@@ -62,29 +66,32 @@ function executeYtDlpWithFallback(extraArgs, options = {}) {
   const hasCookiesFile = fs.existsSync(envCookies) && fs.statSync(envCookies).size > 10;
   const allowBrowser = !process.env.CI;
 
+  // Pass 1: Try with cookie file (if present) or browser cookies (if local)
   for (const strategy of PLAYER_CLIENT_STRATEGIES) {
-    const args = buildYtDlpArgs(strategy, true, extraArgs);
+    const args = buildYtDlpArgs(strategy, true, extraArgs, true);
     const result = spawnSync('yt-dlp', args, {
       encoding: 'utf-8',
       stdio: inheritStdio ? 'inherit' : 'pipe'
     });
 
-    if (result && result.status === 0 && result.stdout && result.stdout.trim()) {
+    const isSuccess = result && result.status === 0 && (inheritStdio || (result.stdout && result.stdout.trim()));
+    if (isSuccess) {
       return result;
     }
     lastResult = result;
   }
 
-  // Only run second pass if browser cookies were an option in pass 1 and no cookie file exists
-  if (allowBrowser && !hasCookiesFile) {
+  // Pass 2: Fallback without cookies (useful if cookie file has rotated/expired tokens or local browser cookie extraction failed)
+  if (hasCookiesFile || allowBrowser) {
     for (const strategy of PLAYER_CLIENT_STRATEGIES) {
-      const args = buildYtDlpArgs(strategy, false, extraArgs);
+      const args = buildYtDlpArgs(strategy, false, extraArgs, false);
       const result = spawnSync('yt-dlp', args, {
         encoding: 'utf-8',
         stdio: inheritStdio ? 'inherit' : 'pipe'
       });
 
-      if (result && result.status === 0 && result.stdout && result.stdout.trim()) {
+      const isSuccess = result && result.status === 0 && (inheritStdio || (result.stdout && result.stdout.trim()));
+      if (isSuccess) {
         return result;
       }
       lastResult = result;
@@ -167,10 +174,12 @@ export function resolveTargetUrls(target, options = {}) {
         console.log(`  🔎 Scanning ${tabLabel}...`);
       }
 
-      // Single-call query returning upload_date, webpage_url, title for top recent videos
+      // Fast flat-playlist query: extracts lightweight tab feed metadata without requesting individual video pages
       const queryArgs = [
+        '--flat-playlist',
+        '--extractor-args', 'youtubetab:approximate_date;youtubetab:skip=authcheck',
         '--playlist-end', String(maxCheck),
-        '--print', '%(upload_date>%Y_%m_%d)s\t%(webpage_url)s\t%(title)s',
+        '--print', '%(id)s\t%(title)s\t%(upload_date>%Y_%m_%d)s\t%(live_status)s',
         channelUrl
       ];
 
@@ -184,9 +193,18 @@ export function resolveTargetUrls(target, options = {}) {
           const parts = line.split('\t');
           if (parts.length < 2) continue;
 
-          const videoDateStr = parts[0];
-          const videoUrl = parts[1];
-          const title = parts[2] || videoUrl;
+          const videoId = parts[0];
+          const title = parts[1] || videoId;
+          const videoDateStr = parts[2] || '';
+          const liveStatus = (parts[3] || '').toLowerCase();
+
+          // Skip upcoming / scheduled live streams that have not finished airing
+          if (liveStatus === 'is_upcoming') {
+            console.log(`  └─ Skipping upcoming live stream: ${title}`);
+            continue;
+          }
+
+          const videoUrl = videoId.startsWith('http') ? videoId : `https://www.youtube.com/watch?v=${videoId}`;
 
           if (/^\d{4}_\d{2}_\d{2}$/.test(videoDateStr)) {
             if (videoDateStr >= cutoffDateStr) {
@@ -196,8 +214,9 @@ export function resolveTargetUrls(target, options = {}) {
               console.log(`  └─ Reached older video: ${title} (${videoDateStr}). Stopping this tab scan.`);
               break;
             }
-          } else if (videoUrl.startsWith('http')) {
-            console.log(`  └─ Including video: ${title}`);
+          } else {
+            // Include video if date is unavailable in flat-playlist
+            console.log(`  └─ Found video: ${title}`);
             allMatchingUrls.push(videoUrl);
           }
         }

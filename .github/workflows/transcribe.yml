@@ -71,7 +71,7 @@ jobs:
         run: |
           if [ -n "$YTDLP_COOKIES" ]; then
             echo "$YTDLP_COOKIES" > cookies.txt
-            echo "✅ Loaded YouTube cookies from YTDLP_COOKIES GitHub secret."
+            echo "✅ Loaded YouTube cookies from YTDLP_COOKIES GitHub secret ($(wc -c < cookies.txt) bytes)."
           else
             echo "ℹ️ No YTDLP_COOKIES secret found, proceeding with player client strategy rotation."
             echo "⚠️ Note: Cloud runner IPs (GitHub Actions) are often rate-limited or challenged by YouTube."
