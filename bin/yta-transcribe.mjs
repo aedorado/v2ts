@@ -102,6 +102,13 @@ export async function runCli() {
     process.exit(1);
   }
 
+  const envCookies = process.env.YTDLP_COOKIES_FILE || 'cookies.txt';
+  if (fs.existsSync(envCookies) && fs.statSync(envCookies).size > 10) {
+    console.log(`🍪 Found cookies file: ${envCookies} (${fs.statSync(envCookies).size} bytes)`);
+  } else {
+    console.log(`ℹ️ No cookie file found at: ${envCookies}`);
+  }
+
   const urls = resolveTargetUrls(cliArgs.target, { days: cliArgs.days });
 
   if (urls.length === 0) {

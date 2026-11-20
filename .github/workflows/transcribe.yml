@@ -49,6 +49,11 @@ jobs:
           node-version: 22
           cache: 'npm'
 
+      - name: Setup Deno (Required by yt-dlp for YouTube JavaScript challenge solving)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install System Dependencies (ffmpeg & yt-dlp)
         run: |
           if ! command -v ffmpeg &> /dev/null; then

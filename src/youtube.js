@@ -3,13 +3,15 @@ import fs from 'fs';
 import path from 'path';
 import { sanitizeFilename } from './utils.js';
 
+// Global cache for video metadata discovered during channel scanning
+export const videoMetadataCache = new Map();
+
 // Reliable player client strategies for YouTube metadata and audio downloading
 const PLAYER_CLIENT_STRATEGIES = [
   'default', // yt-dlp native auto-selection
-  'youtube:player_client=tv_embedded,web',
+  'youtube:player_client=tv,web_embedded',
   'youtube:player_client=ios,web_creator',
-  'youtube:player_client=mweb,android',
-  'youtube:player_client=android_vr,tv_embedded'
+  'youtube:player_client=mweb,android'
 ];
 
 /**
@@ -43,6 +45,9 @@ function buildYtDlpArgs(playerClientStrategy, allowBrowserCookies = true, extraA
   } else if (allowBrowserCookies && !process.env.CI) {
     baseArgs.push('--cookies-from-browser', 'chrome');
   }
+
+  // Enable JavaScript runtime for YouTube n-challenge solving (deno / node)
+  baseArgs.push('--js-runtimes', 'node');
 
   if (playerClientStrategy && playerClientStrategy !== 'default') {
     baseArgs.push('--extractor-args', playerClientStrategy);
@@ -205,6 +210,7 @@ export function resolveTargetUrls(target, options = {}) {
           }
 
           const videoUrl = videoId.startsWith('http') ? videoId : `https://www.youtube.com/watch?v=${videoId}`;
+          videoMetadataCache.set(videoUrl, { title, uploadDate: videoDateStr });
 
           if (/^\d{4}_\d{2}_\d{2}$/.test(videoDateStr)) {
             if (videoDateStr >= cutoffDateStr) {
@@ -260,12 +266,14 @@ export function resolveTargetUrls(target, options = {}) {
 
 /**
  * Fetches video metadata (upload date & title) using yt-dlp with fallback strategies.
+ * Falls back to cached channel metadata if individual extraction fails.
  * @param {string} youtubeUrl 
  * @returns {{ uploadDate: string, rawTitle: string, cleanTitle: string, folderName: string }}
  */
 export function fetchVideoMetadata(youtubeUrl) {
-  let uploadDate = '';
-  let rawTitle = 'youtube_audio';
+  const cached = videoMetadataCache.get(youtubeUrl);
+  let uploadDate = cached?.uploadDate || '';
+  let rawTitle = cached?.title || 'youtube_audio';
 
   const metaCmd = executeYtDlpWithFallback([
     '--print', '%(upload_date>%Y_%m_%d)s',
@@ -273,13 +281,13 @@ export function fetchVideoMetadata(youtubeUrl) {
     youtubeUrl
   ], { inheritStdio: false });
 
-  if (metaCmd && metaCmd.stdout) {
+  if (metaCmd && metaCmd.stdout && metaCmd.stdout.trim()) {
     const lines = metaCmd.stdout.trim().split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length >= 2) {
-      uploadDate = lines[0];
-      rawTitle = lines.slice(1).join(' ');
+      uploadDate = lines[0] || uploadDate;
+      rawTitle = lines.slice(1).join(' ') || rawTitle;
     } else if (lines.length === 1) {
-      rawTitle = lines[0];
+      rawTitle = lines[0] || rawTitle;
     }
   }
 
@@ -304,7 +312,7 @@ export function downloadAudio(youtubeUrl, audioPath) {
   console.log(`Downloading audio to: ${audioPath}`);
 
   const downloadParams = [
-    '-f', 'ba[ext=m4a]/ba/worst[acodec!=none]',
+    '-f', 'ba[ext=m4a]/ba/b[acodec!=none]/worst[acodec!=none]',
     '--extract-audio',
     '--audio-format', 'mp3',
     '--audio-quality', '0',
